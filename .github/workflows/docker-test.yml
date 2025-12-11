@@ -36,10 +36,10 @@ jobs:
             image: debian:12
           - name: centos-stream-9
             image: quay.io/centos/centos:stream9
-          - name: fedora-40
-            image: fedora:40
-          - name: fedora-41
-            image: fedora:41
+          - name: fedora-42
+            image: fedora:42
+          - name: fedora-43
+            image: fedora:43
           - name: rocky-8
             image: rockylinux:8
           - name: rocky-9
@@ -99,8 +99,9 @@ jobs:
         run: |
           echo "Waiting for OpenVPN server to install and start..."
           for i in {1..60}; do
-            # Use pgrep -x to match exactly "openvpn" process, not "apt-get install openvpn"
-            if docker exec openvpn-server pgrep -x openvpn > /dev/null 2>&1; then
+            # Use pgrep -f to match openvpn running with server.conf, not transient
+            # processes like "openvpn --genkey" that run during installation
+            if docker exec openvpn-server pgrep -f "openvpn.*server.conf" > /dev/null 2>&1; then
               echo "OpenVPN server is running!"
               break
             fi
@@ -111,7 +112,7 @@ jobs:
           done
 
           # Final check
-          if ! docker exec openvpn-server pgrep -x openvpn > /dev/null 2>&1; then
+          if ! docker exec openvpn-server pgrep -f "openvpn.*server.conf" > /dev/null 2>&1; then
             echo "ERROR: OpenVPN server failed to start"
             docker logs openvpn-server
             exit 1
@@ -162,6 +163,12 @@ jobs:
           docker logs openvpn-server 2>&1 || true
           echo "=== openvpn-install.log ==="
           docker exec openvpn-server cat /opt/openvpn-install.log 2>/dev/null || echo "Log file not found"
+
+      - name: Show install script log
+        if: always()
+        run: |
+          docker cp openvpn-server:/opt/openvpn-install.log /tmp/openvpn-install.log 2>/dev/null && \
+            cat /tmp/openvpn-install.log || echo "No install log found"
 
       - name: Show client logs
         if: always()
