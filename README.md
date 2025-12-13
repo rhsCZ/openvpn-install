@@ -59,7 +59,8 @@ The first time you run it, you'll have to follow the assistant and answer a few 
 When OpenVPN is installed, you can run the script again, and you will get the choice to:
 
 - Add a client
-- Remove a client
+- List client certificates
+- Revoke a client
 - Renew certificates (client or server)
 - Uninstall OpenVPN
 
@@ -99,6 +100,7 @@ If you want to customise your installation, you can export them or specify them 
 - `MULTI_CLIENT=n`
 - `CLIENT_CERT_DURATION_DAYS=3650`
 - `SERVER_CERT_DURATION_DAYS=3650`
+- `NEW_CLIENT=y` (set to `n` to skip client creation after installation)
 
 If the server is behind NAT, you can specify its endpoint with the `ENDPOINT` variable. If the endpoint is the public IP address which it is behind, you can use `ENDPOINT=$(curl -4 ifconfig.co)` (the script will default to this). The endpoint can be an IPv4 or a domain.
 

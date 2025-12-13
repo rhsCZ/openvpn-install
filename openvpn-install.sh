@@ -9,8 +9,8 @@
 # Configuration constants
 readonly DEFAULT_CERT_VALIDITY_DURATION_DAYS=3650 # 10 years
 readonly DEFAULT_CRL_VALIDITY_DURATION_DAYS=5475  # 15 years
-readonly EASYRSA_VERSION="3.2.4"
-readonly EASYRSA_SHA256="ed65e88cea892268efa71eb1161ce13af3beded6754301e1e713e36ff3613cac"
+readonly EASYRSA_VERSION="3.2.5"
+readonly EASYRSA_SHA256="662ee3b453155aeb1dff7096ec052cd83176c460cfa82ac130ef8568ec4df490"
 
 # =============================================================================
 # Logging Configuration
@@ -671,7 +671,7 @@ function installQuestions() {
 	log_menu "   12) NextDNS (Anycast: worldwide)"
 	log_menu "   13) Custom"
 	until [[ $DNS =~ ^[0-9]+$ ]] && [ "$DNS" -ge 1 ] && [ "$DNS" -le 13 ]; do
-		read -rp "DNS [1-13]: " -e -i 11 DNS
+		read -rp "DNS [1-13]: " -e -i 3 DNS
 		if [[ $DNS == 2 ]] && [[ -e /etc/unbound/unbound.conf ]]; then
 			log_menu ""
 			log_prompt "Unbound is already installed."
@@ -981,7 +981,7 @@ function installOpenVPN() {
 		IPV6_SUPPORT=${IPV6_SUPPORT:-n}
 		PORT_CHOICE=${PORT_CHOICE:-1}
 		PROTOCOL_CHOICE=${PROTOCOL_CHOICE:-1}
-		DNS=${DNS:-1}
+		DNS=${DNS:-3}
 		COMPRESSION_ENABLED=${COMPRESSION_ENABLED:-n}
 		MULTI_CLIENT=${MULTI_CLIENT:-n}
 		CUSTOMIZE_ENC=${CUSTOMIZE_ENC:-n}
@@ -990,6 +990,7 @@ function installOpenVPN() {
 		CLIENT_CERT_DURATION_DAYS=${CLIENT_CERT_DURATION_DAYS:-$DEFAULT_CERT_VALIDITY_DURATION_DAYS}
 		SERVER_CERT_DURATION_DAYS=${SERVER_CERT_DURATION_DAYS:-$DEFAULT_CERT_VALIDITY_DURATION_DAYS}
 		CONTINUE=${CONTINUE:-y}
+		NEW_CLIENT=${NEW_CLIENT:-y}
 
 		if [[ -z $ENDPOINT ]]; then
 			ENDPOINT=$(resolvePublicIP)
@@ -1170,11 +1171,11 @@ function installOpenVPN() {
 			;;
 		2)
 			# Generate tls-crypt key
-			run_cmd_fatal "Generating tls-crypt key" openvpn --genkey --secret /etc/openvpn/server/tls-crypt.key
+			run_cmd_fatal "Generating tls-crypt key" openvpn --genkey secret /etc/openvpn/server/tls-crypt.key
 			;;
 		3)
 			# Generate tls-auth key
-			run_cmd_fatal "Generating tls-auth key" openvpn --genkey --secret /etc/openvpn/server/tls-auth.key
+			run_cmd_fatal "Generating tls-auth key" openvpn --genkey secret /etc/openvpn/server/tls-auth.key
 			;;
 		esac
 	else
@@ -1517,9 +1518,13 @@ verb 3" >>/etc/openvpn/server/client-template.txt
 	fi
 
 	# Generate the custom client.ovpn
-	log_info "Generating first client certificate..."
-	newClient
-	log_success "If you want to add more clients, you simply need to run this script another time!"
+	if [[ $NEW_CLIENT == "n" ]]; then
+		log_info "No clients added. To add clients, simply run the script again."
+	else
+		log_info "Generating first client certificate..."
+		newClient
+		log_success "If you want to add more clients, you simply need to run this script another time!"
+	fi
 }
 
 # Helper function to get the home directory for storing client configs
@@ -1646,6 +1651,88 @@ function selectClient() {
 	done
 	CLIENTNUMBER="${CLIENTNUMBER:-$client_number}"
 	CLIENT=$(tail -n +2 /etc/openvpn/server/easy-rsa/pki/index.txt | grep "^V" | cut -d '=' -f 2 | sed -n "$CLIENTNUMBER"p)
+}
+
+function listClients() {
+	log_header "Client Certificates"
+
+	local index_file="/etc/openvpn/server/easy-rsa/pki/index.txt"
+	local number_of_clients
+	# Exclude server certificates (CN starting with server_)
+	number_of_clients=$(tail -n +2 "$index_file" | grep "^[VR]" | grep -cv "/CN=server_")
+
+	if [[ $number_of_clients == '0' ]]; then
+		log_warn "You have no existing client certificates!"
+		return
+	fi
+
+	log_info "Found $number_of_clients client certificate(s)"
+	log_menu ""
+	printf "   %-25s %-10s %-12s %s\n" "Name" "Status" "Expiry" "Remaining"
+	printf "   %-25s %-10s %-12s %s\n" "----" "------" "------" "---------"
+
+	local cert_dir="/etc/openvpn/server/easy-rsa/pki/issued"
+
+	# Parse index.txt and sort by expiry date (oldest first)
+	# Exclude server certificates (CN starting with server_)
+	{
+		while read -r line; do
+			local status="${line:0:1}"
+			local client_name
+			client_name=$(echo "$line" | sed 's/.*\/CN=//')
+
+			# Format status
+			local status_text
+			if [[ "$status" == "V" ]]; then
+				status_text="Valid"
+			elif [[ "$status" == "R" ]]; then
+				status_text="Revoked"
+			else
+				status_text="Unknown"
+			fi
+
+			# Get expiry date from certificate file
+			local cert_file="$cert_dir/$client_name.crt"
+			local expiry_date="unknown"
+			local relative="unknown"
+
+			if [[ -f "$cert_file" ]]; then
+				# Get expiry from certificate (format: notAfter=Mon DD HH:MM:SS YYYY GMT)
+				local enddate
+				enddate=$(openssl x509 -enddate -noout -in "$cert_file" 2>/dev/null | cut -d= -f2)
+
+				if [[ -n "$enddate" ]]; then
+					# Parse date and convert to epoch
+					local expiry_epoch
+					expiry_epoch=$(date -d "$enddate" +%s 2>/dev/null || date -j -f "%b %d %H:%M:%S %Y %Z" "$enddate" +%s 2>/dev/null)
+
+					if [[ -n "$expiry_epoch" ]]; then
+						# Format as YYYY-MM-DD
+						expiry_date=$(date -d "@$expiry_epoch" +%Y-%m-%d 2>/dev/null || date -r "$expiry_epoch" +%Y-%m-%d 2>/dev/null)
+
+						# Calculate days remaining
+						local now_epoch days_remaining
+						now_epoch=$(date +%s)
+						days_remaining=$(((expiry_epoch - now_epoch) / 86400))
+
+						if [[ $days_remaining -lt 0 ]]; then
+							relative="$((-days_remaining)) days ago"
+						elif [[ $days_remaining -eq 0 ]]; then
+							relative="today"
+						elif [[ $days_remaining -eq 1 ]]; then
+							relative="1 day"
+						else
+							relative="$days_remaining days"
+						fi
+					fi
+				fi
+			fi
+
+			printf "   %-25s %-10s %-12s %s\n" "$client_name" "$status_text" "$expiry_date" "$relative"
+		done < <(tail -n +2 "$index_file" | grep "^[VR]" | grep -v "/CN=server_" | sort -t$'\t' -k2)
+	}
+
+	log_menu ""
 }
 
 function newClient() {
@@ -2036,12 +2123,13 @@ function manageMenu() {
 	log_menu ""
 	log_prompt "What do you want to do?"
 	log_menu "   1) Add a new user"
-	log_menu "   2) Revoke existing user"
-	log_menu "   3) Renew certificate"
-	log_menu "   4) Remove OpenVPN"
-	log_menu "   5) Exit"
-	until [[ ${MENU_OPTION:-$menu_option} =~ ^[1-5]$ ]]; do
-		read -rp "Select an option [1-5]: " menu_option
+	log_menu "   2) List client certificates"
+	log_menu "   3) Revoke existing user"
+	log_menu "   4) Renew certificate"
+	log_menu "   5) Remove OpenVPN"
+	log_menu "   6) Exit"
+	until [[ ${MENU_OPTION:-$menu_option} =~ ^[1-6]$ ]]; do
+		read -rp "Select an option [1-6]: " menu_option
 	done
 	menu_option="${MENU_OPTION:-$menu_option}"
 
@@ -2050,15 +2138,18 @@ function manageMenu() {
 		newClient
 		;;
 	2)
-		revokeClient
+		listClients
 		;;
 	3)
-		renewMenu
+		revokeClient
 		;;
 	4)
-		removeOpenVPN
+		renewMenu
 		;;
 	5)
+		removeOpenVPN
+		;;
+	6)
 		exit 0
 		;;
 	esac
