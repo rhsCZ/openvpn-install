@@ -108,9 +108,38 @@ Sysctl options are at `/etc/sysctl.d/99-openvpn.conf`
 
 ---
 
-**Q:** How can I access computers the OpenVPN server's remote LAN?
+**Q:** How can I access computers on the OpenVPN server's LAN?
 
-**A:** Add a route with the subnet of the remote network to `/etc/openvpn/server/server.conf` and restart OpenVPN. Example: `push "route 192.168.1.0 255.255.255.0"` if the server's LAN is `192.168.1.0/24`
+**A:** Two steps are required:
+
+1. **Push a route to clients** - Add the LAN subnet to `/etc/openvpn/server/server.conf`:
+
+   ```
+   push "route 192.168.1.0 255.255.255.0"
+   ```
+
+   Replace `192.168.1.0/24` with your actual LAN subnet.
+
+2. **Enable routing back to VPN clients** - Choose one of these options:
+   - **Option A: Add a static route on your router** (recommended when you can configure your router)
+
+     On your LAN router, add a route for the VPN subnet (default `10.8.0.0/24`) pointing to the OpenVPN server's LAN IP. This allows LAN devices to reply to VPN clients without NAT.
+
+   - **Option B: Masquerade VPN traffic to LAN**
+
+     If you can't modify your router, add a masquerade rule so VPN traffic appears to come from the server:
+
+     ```bash
+     # iptables
+     iptables -t nat -A POSTROUTING -s 10.8.0.0/24 -d 192.168.1.0/24 -j MASQUERADE
+
+     # or nftables
+     nft add rule ip nat postrouting ip saddr 10.8.0.0/24 ip daddr 192.168.1.0/24 masquerade
+     ```
+
+     Make this persistent by adding it to your firewall scripts.
+
+Restart OpenVPN after making changes: `systemctl restart openvpn-server@server`
 
 ---
 
@@ -183,3 +212,21 @@ label fc00::/7      1
 ```
 
 This will not work properly unless you add you your VPN server `server.conf` one or two lines to push at least 1 (one) IPv6 DNS server. Most providers have IPv6 servers as well, add two more lines of `push "dhcp-option DNS <IPv6>"`
+
+---
+
+**Q:** How can I run OpenVPN on port 443 alongside a web server?
+
+**A:** Use OpenVPN's `port-share` feature to multiplex both services on the same port. When OpenVPN receives non-VPN traffic, it forwards it to your web server.
+
+1. During installation, select **TCP** and port **443**
+2. Configure your web server to listen on a different port (e.g., 8443)
+3. Add to `/etc/openvpn/server/server.conf`:
+
+   ```
+   port-share 127.0.0.1 8443
+   ```
+
+4. Restart OpenVPN: `systemctl restart openvpn-server@server`
+
+This is useful when your network only allows outbound connections on port 443. Note that TCP has worse performance than UDP for VPN traffic due to head-of-line blocking, so only use this when necessary.
