@@ -1837,6 +1837,7 @@ function installOpenVPNRepo() {
 	if [[ $OS =~ (debian|ubuntu) ]]; then
 		local repo_url="https://build.openvpn.net/debian/openvpn/stable"
 		local repo_list="/etc/apt/sources.list.d/openvpn-aptrepo.list"
+		local repo_status
 
 		# Remove configuration left by an interrupted or failed installation so
 		# that it cannot prevent the prerequisite package update.
@@ -1849,9 +1850,20 @@ function installOpenVPNRepo() {
 
 		# The OpenVPN repository does not publish packages for every Debian and
 		# Ubuntu suite. This commonly affects Debian testing and unstable.
-		if [[ -z ${VERSION_CODENAME:-} ]] || ! curl -fsL --connect-timeout 10 --max-time 30 -o /dev/null "${repo_url}/dists/${VERSION_CODENAME}/Release"; then
-			log_warn "Official OpenVPN repository is unavailable for ${VERSION_CODENAME:-this distribution}; using distribution packages"
+		if [[ -z ${VERSION_CODENAME:-} ]]; then
+			log_warn "Distribution codename is unavailable; using distribution packages"
 			return 0
+		fi
+
+		if ! repo_status=$(curl -sL --connect-timeout 10 --max-time 30 -o /dev/null -w "%{http_code}" "${repo_url}/dists/${VERSION_CODENAME}/Release"); then
+			log_fatal "Failed to check OpenVPN repository availability for ${VERSION_CODENAME}"
+		fi
+
+		if [[ $repo_status == "404" ]]; then
+			log_warn "Official OpenVPN repository does not publish packages for ${VERSION_CODENAME}; using distribution packages"
+			return 0
+		elif [[ $repo_status != "200" ]]; then
+			log_fatal "OpenVPN repository availability check returned HTTP ${repo_status} for ${VERSION_CODENAME}"
 		fi
 
 		# Create keyrings directory
