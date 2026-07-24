@@ -1633,7 +1633,8 @@ function checkOS() {
 		source /etc/os-release
 
 		if [[ $ID == "debian" || $ID == "raspbian" ]]; then
-			if [[ $VERSION_ID -lt 11 ]]; then
+			# Debian testing and unstable do not set VERSION_ID.
+			if [[ -n ${VERSION_ID:-} && $VERSION_ID -lt 11 ]]; then
 				log_warn "Your version of Debian is not supported."
 				log_info "However, if you're using Debian >= 11 or unstable/testing, you can continue at your own risk."
 				until [[ $CONTINUE =~ (y|n) ]]; do
