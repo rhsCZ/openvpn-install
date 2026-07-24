@@ -36,6 +36,8 @@ jobs:
             image: debian:11
           - name: debian-12
             image: debian:12
+          - name: debian-sid
+            image: debian:sid
           - name: centos-stream-9
             image: quay.io/centos/centos:stream9
           - name: centos-stream-10
