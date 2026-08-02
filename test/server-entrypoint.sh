@@ -693,59 +693,59 @@ echo "Post-renewal client tests passed"
 if [ "$ROUTE_INTERNET" = "y" ]; then
 	echo "=== Verifying Unbound DNS Resolver ==="
 
-if [ -f /etc/unbound/unbound.conf ]; then
-	# Verify Unbound is running (started by systemctl in install script)
-	echo "Checking Unbound service status..."
-	for _ in $(seq 1 30); do
-		if pgrep -x unbound >/dev/null; then
-			echo "PASS: Unbound is running"
-			break
+	if [ -f /etc/unbound/unbound.conf ]; then
+		# Verify Unbound is running (started by systemctl in install script)
+		echo "Checking Unbound service status..."
+		for _ in $(seq 1 30); do
+			if pgrep -x unbound >/dev/null; then
+				echo "PASS: Unbound is running"
+				break
+			fi
+			sleep 1
+		done
+		if ! pgrep -x unbound >/dev/null; then
+			echo "FAIL: Unbound is not running"
+			systemctl status unbound 2>&1 || true
+			journalctl -u unbound --no-pager -n 50 2>&1 || true
+			exit 1
 		fi
-		sleep 1
-	done
-	if ! pgrep -x unbound >/dev/null; then
-		echo "FAIL: Unbound is not running"
-		systemctl status unbound 2>&1 || true
-		journalctl -u unbound --no-pager -n 50 2>&1 || true
+	else
+		echo "FAIL: /etc/unbound/unbound.conf not found"
 		exit 1
 	fi
-else
-	echo "FAIL: /etc/unbound/unbound.conf not found"
-	exit 1
-fi
 
-echo ""
-echo "=== Verifying Unbound Installation ==="
+	echo ""
+	echo "=== Verifying Unbound Installation ==="
 
-# Verify Unbound config exists in conf.d directory
-UNBOUND_OPENVPN_CONF="/etc/unbound/unbound.conf.d/openvpn.conf"
-if [ -f "$UNBOUND_OPENVPN_CONF" ]; then
-	echo "PASS: Found Unbound config at $UNBOUND_OPENVPN_CONF"
-else
-	echo "FAIL: OpenVPN Unbound config not found at $UNBOUND_OPENVPN_CONF"
-	echo "Contents of /etc/unbound/:"
-	ls -la /etc/unbound/
-	ls -la /etc/unbound/unbound.conf.d/ 2>/dev/null || true
-	exit 1
-fi
+	# Verify Unbound config exists in conf.d directory
+	UNBOUND_OPENVPN_CONF="/etc/unbound/unbound.conf.d/openvpn.conf"
+	if [ -f "$UNBOUND_OPENVPN_CONF" ]; then
+		echo "PASS: Found Unbound config at $UNBOUND_OPENVPN_CONF"
+	else
+		echo "FAIL: OpenVPN Unbound config not found at $UNBOUND_OPENVPN_CONF"
+		echo "Contents of /etc/unbound/:"
+		ls -la /etc/unbound/
+		ls -la /etc/unbound/unbound.conf.d/ 2>/dev/null || true
+		exit 1
+	fi
 
-# Verify Unbound listens on VPN gateway
-if grep -q "interface: $VPN_GATEWAY" "$UNBOUND_OPENVPN_CONF"; then
-	echo "PASS: Unbound configured to listen on $VPN_GATEWAY"
-else
-	echo "FAIL: Unbound not configured for $VPN_GATEWAY"
-	cat "$UNBOUND_OPENVPN_CONF"
-	exit 1
-fi
+	# Verify Unbound listens on VPN gateway
+	if grep -q "interface: $VPN_GATEWAY" "$UNBOUND_OPENVPN_CONF"; then
+		echo "PASS: Unbound configured to listen on $VPN_GATEWAY"
+	else
+		echo "FAIL: Unbound not configured for $VPN_GATEWAY"
+		cat "$UNBOUND_OPENVPN_CONF"
+		exit 1
+	fi
 
-# Verify OpenVPN pushes correct DNS
-if grep -q "push \"dhcp-option DNS $VPN_GATEWAY\"" /etc/openvpn/server/server.conf; then
-	echo "PASS: OpenVPN configured to push Unbound DNS"
-else
-	echo "FAIL: OpenVPN not configured to push Unbound DNS"
-	grep "dhcp-option DNS" /etc/openvpn/server/server.conf || echo "No DNS push found"
-	exit 1
-fi
+	# Verify OpenVPN pushes correct DNS
+	if grep -q "push \"dhcp-option DNS $VPN_GATEWAY\"" /etc/openvpn/server/server.conf; then
+		echo "PASS: OpenVPN configured to push Unbound DNS"
+	else
+		echo "FAIL: OpenVPN not configured to push Unbound DNS"
+		grep "dhcp-option DNS" /etc/openvpn/server/server.conf || echo "No DNS push found"
+		exit 1
+	fi
 
 	echo "=== Unbound Installation Verified ==="
 	echo ""
