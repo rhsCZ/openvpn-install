@@ -12,18 +12,22 @@ This script is meant to be run on your own server, whether it's a VPS or a dedic
 
 Once set up, you will be able to generate client configuration files for every device you want to connect.
 
-By default, each client routes its internet traffic through the server, fully encrypted. You can instead keep internet traffic outside the VPN and allow only selected server-side networks.
+Internet routing, access between VPN clients, and access to selected server-side networks can be configured independently. By default, internet routing is enabled and the other paths are disabled.
 
 ```mermaid
-graph LR
+flowchart LR
   A[Phone] -->|Encrypted| VPN
   B[Laptop] -->|Encrypted| VPN
   C[Computer] -->|Encrypted| VPN
 
   VPN[OpenVPN Server]
 
-  VPN --> I[Internet]
+  VPN -->|Internet routing<br/>Default: enabled| I[Internet]
+  VPN -.->|Explicit CIDRs only<br/>Default: disabled| LAN[Home LAN or cloud VPC]
+  VPN -.->|Client-to-client access<br/>Default: disabled| PEERS[Other VPN clients]
 ```
+
+The solid destination path is enabled by default. Dashed destination paths are opt-in.
 
 ## Why OpenVPN?
 
