@@ -264,11 +264,66 @@ if [ "${CLIENT_IPV6:-n}" = "y" ]; then
 	fi
 fi
 
-# Test 4: DNS resolution through Unbound in full-tunnel mode.
+# Packet-level access policy tests use a second VPN client and a LAN-only host.
+if [ -n "${POLICY_E2E:-}" ]; then
+	echo "Test 4: Checking packet-level access policy..."
+	wait_for_file /shared/policy-peer-ip "policy peer VPN address"
+	POLICY_PEER_IP=$(cat /shared/policy-peer-ip)
+	POLICY_LAN_IP="${POLICY_LAN_IP:-10.55.0.20}"
+
+	if [ "$POLICY_E2E" = "allow" ]; then
+		if ping -c 3 -W 2 "$POLICY_PEER_IP" >/dev/null; then
+			echo "PASS: Client-to-client packets are allowed"
+		else
+			echo "FAIL: Cannot reach allowed VPN peer $POLICY_PEER_IP"
+			exit 1
+		fi
+		if ping -c 3 -W 2 "$POLICY_LAN_IP" >/dev/null; then
+			echo "PASS: LAN packets and destination-scoped NAT work"
+		else
+			echo "FAIL: Cannot reach allowed LAN host $POLICY_LAN_IP"
+			exit 1
+		fi
+	elif [ "$POLICY_E2E" = "deny" ]; then
+		if ping -c 1 -W 2 "$POLICY_PEER_IP" >/dev/null; then
+			echo "FAIL: Isolated VPN peer $POLICY_PEER_IP is reachable"
+			exit 1
+		fi
+		echo "PASS: Client-to-client packets are blocked"
+		if ping -c 1 -W 2 "$POLICY_LAN_IP" >/dev/null; then
+			echo "FAIL: Unexposed LAN host $POLICY_LAN_IP is reachable"
+			exit 1
+		fi
+		echo "PASS: Unexposed LAN packets are blocked"
+	else
+		echo "FAIL: Unknown POLICY_E2E value: $POLICY_E2E"
+		exit 1
+	fi
+
+	if [ "${ROUTE_INTERNET:-y}" = "y" ]; then
+		PUBLIC_DNS_OUTPUT=""
+		for _ in $(seq 1 5); do
+			PUBLIC_DNS_OUTPUT=$(dig @1.1.1.1 example.com +short +tcp +time=5 +tries=1 2>&1) || true
+			if grep -qE '^[0-9]+(\.[0-9]+){3}$' <<<"$PUBLIC_DNS_OUTPUT"; then
+				break
+			fi
+			PUBLIC_DNS_OUTPUT=""
+			sleep 2
+		done
+		if [ -n "$PUBLIC_DNS_OUTPUT" ]; then
+			echo "PASS: Direct internet packets traverse VPN forwarding and NAT"
+		else
+			echo "FAIL: Direct public DNS query through the VPN failed"
+			exit 1
+		fi
+	fi
+fi
+
+# Test 5: DNS resolution through Unbound in full-tunnel mode.
 if [ "${ROUTE_INTERNET:-y}" = "y" ]; then
-	test_dns_resolution "Test 4"
+	test_dns_resolution "Test 5"
 else
-	echo "Test 4: SKIP: VPN DNS is disabled in split-tunnel mode"
+	echo "Test 5: SKIP: VPN DNS is disabled in split-tunnel mode"
 fi
 
 echo ""

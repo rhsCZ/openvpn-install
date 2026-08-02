@@ -77,6 +77,7 @@ export VPN_GATEWAY
 ROUTE_INTERNET="${ROUTE_INTERNET:-y}"
 CLIENT_TO_CLIENT="${CLIENT_TO_CLIENT:-n}"
 LOCAL_NETWORKS="${LOCAL_NETWORKS:-}"
+POLICY_E2E="${POLICY_E2E:-}"
 
 # IPv6 configuration (optional)
 # CLIENT_IPV6: y/n to enable IPv6 for VPN clients
@@ -339,6 +340,17 @@ else
 	echo "FAIL: Expected error message for duplicate client name not found"
 	cat "$DUPLICATE_OUTPUT"
 	exit 1
+fi
+
+if [ -n "$POLICY_E2E" ]; then
+	echo "Creating second VPN client for packet-level policy tests..."
+	bash /opt/openvpn-install.sh client add policy-peer --cert-days 3650
+	if [ ! -f /root/policy-peer.ovpn ]; then
+		echo "FAIL: Policy peer client configuration was not generated"
+		exit 1
+	fi
+	cp /root/policy-peer.ovpn /shared/policy-peer.ovpn
+	sed -i 's/^remote .*/remote openvpn-server 1194/' /shared/policy-peer.ovpn
 fi
 
 # Copy client config to shared volume for initial connectivity tests
@@ -1049,10 +1061,8 @@ echo "=== Certificate Revocation Tests PASSED ==="
 echo ""
 echo "=== Testing List Client Certificates ==="
 
-# At this point we have 3 client certificates:
-# - testclient (Valid) - the renewed certificate
-# - testclient (Revoked) - the old certificate revoked during renewal
-# - revoketest (Revoked) - the revoked certificate
+# At this point PKI mode has three lifecycle-test certificates, plus the
+# optional policy peer used by packet-level access tests.
 LIST_OUTPUT="/tmp/list-clients-output.log"
 (bash /opt/openvpn-install.sh client list) 2>&1 | tee "$LIST_OUTPUT" || true
 
@@ -1075,8 +1085,9 @@ fi
 
 # Verify certificate count (varies by auth mode)
 if [ "$AUTH_MODE" = "pki" ]; then
-	# PKI mode: 3 certs (testclient valid, testclient revoked from renewal, revoketest revoked)
-	if grep -q "Found 3 client certificate(s)" "$LIST_OUTPUT"; then
+	EXPECTED_CLIENT_COUNT=3
+	[ -n "$POLICY_E2E" ] && EXPECTED_CLIENT_COUNT=4
+	if grep -q "Found $EXPECTED_CLIENT_COUNT client certificate(s)" "$LIST_OUTPUT"; then
 		echo "PASS: List shows correct certificate count"
 	else
 		echo "FAIL: List does not show correct certificate count"
@@ -1112,10 +1123,10 @@ fi
 # Verify client count in JSON (varies by auth mode)
 JSON_CLIENT_COUNT=$(jq '.clients | length' "$LIST_JSON_OUTPUT")
 if [ "$AUTH_MODE" = "pki" ]; then
-	if [ "$JSON_CLIENT_COUNT" -eq 3 ]; then
+	if [ "$JSON_CLIENT_COUNT" -eq "$EXPECTED_CLIENT_COUNT" ]; then
 		echo "PASS: Client list JSON has correct count ($JSON_CLIENT_COUNT)"
 	else
-		echo "FAIL: Client list JSON has wrong count: $JSON_CLIENT_COUNT (expected 3)"
+		echo "FAIL: Client list JSON has wrong count: $JSON_CLIENT_COUNT (expected $EXPECTED_CLIENT_COUNT)"
 		cat "$LIST_JSON_OUTPUT"
 		exit 1
 	fi
