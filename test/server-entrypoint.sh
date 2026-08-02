@@ -57,9 +57,26 @@ if grep -q $'\033' "$NO_COLOR_OUTPUT"; then
 fi
 echo "PASS: --no-color help output has no ANSI escape sequences"
 
+INVALID_NETWORK_OUTPUT="/tmp/invalid-local-network.log"
+if /opt/openvpn-install.sh install --local-network 192.168.1.1/24 >"$INVALID_NETWORK_OUTPUT" 2>&1; then
+	echo "FAIL: Host-address CIDR was accepted as a local network"
+	exit 1
+elif grep -q "Invalid local network" "$INVALID_NETWORK_OUTPUT"; then
+	echo "PASS: Invalid local network CIDR is rejected"
+else
+	echo "FAIL: Expected local network validation error"
+	cat "$INVALID_NETWORK_OUTPUT"
+	exit 1
+fi
+
 # Calculate VPN gateway from subnet (first usable IP)
 VPN_GATEWAY="${VPN_SUBNET_IPV4%.*}.1"
 export VPN_GATEWAY
+
+# Access policy configuration
+ROUTE_INTERNET="${ROUTE_INTERNET:-y}"
+CLIENT_TO_CLIENT="${CLIENT_TO_CLIENT:-n}"
+LOCAL_NETWORKS="${LOCAL_NETWORKS:-}"
 
 # IPv6 configuration (optional)
 # CLIENT_IPV6: y/n to enable IPv6 for VPN clients
@@ -94,6 +111,18 @@ INSTALL_CMD+=(--dns unbound)
 INSTALL_CMD+=(--subnet-ipv4 "$VPN_SUBNET_IPV4")
 INSTALL_CMD+=(--mtu 1400)
 INSTALL_CMD+=(--client testclient)
+
+if [ "$ROUTE_INTERNET" = "n" ]; then
+	INSTALL_CMD+=(--no-route-internet)
+fi
+if [ "$CLIENT_TO_CLIENT" = "y" ]; then
+	INSTALL_CMD+=(--client-to-client)
+fi
+if [ -n "$LOCAL_NETWORKS" ]; then
+	while IFS= read -r local_network; do
+		INSTALL_CMD+=(--local-network "$local_network")
+	done < <(tr ',' '\n' <<<"$LOCAL_NETWORKS")
+fi
 
 # Add IPv6 client support if enabled
 if [ "$CLIENT_IPV6" = "y" ]; then
@@ -198,6 +227,65 @@ fi
 echo "All required files present"
 
 # =====================================================
+# Verify access policy configuration
+# =====================================================
+echo ""
+echo "=== Verifying Access Policy Configuration ==="
+
+if [ "$ROUTE_INTERNET" = "y" ]; then
+	if grep -q '^push "redirect-gateway def1 bypass-dhcp"' /etc/openvpn/server/server.conf; then
+		echo "PASS: Internet default route is pushed"
+	else
+		echo "FAIL: Internet default route is missing"
+		exit 1
+	fi
+else
+	if grep -q 'redirect-gateway\|block-ipv6' /etc/openvpn/server/server.conf; then
+		echo "FAIL: Internet or leak-blocking routes exist in split-tunnel mode"
+		exit 1
+	fi
+	echo "PASS: Client internet routes remain outside the VPN"
+fi
+
+if [ "$CLIENT_TO_CLIENT" = "y" ]; then
+	grep -q '^client-to-client$' /etc/openvpn/server/server.conf || {
+		echo "FAIL: client-to-client directive is missing"
+		exit 1
+	}
+else
+	if grep -q '^client-to-client$' /etc/openvpn/server/server.conf; then
+		echo "FAIL: client-to-client is enabled by default"
+		exit 1
+	fi
+fi
+
+if [ -n "$LOCAL_NETWORKS" ]; then
+	while IFS= read -r local_network; do
+		if [[ $local_network == *.* ]]; then
+			local_address="${local_network%/*}"
+			grep -q "^push \"route $local_address " /etc/openvpn/server/server.conf || {
+				echo "FAIL: Local IPv4 route for $local_network is missing"
+				exit 1
+			}
+		else
+			grep -q "^push \"route-ipv6 $local_network\"" /etc/openvpn/server/server.conf || {
+				echo "FAIL: Local IPv6 route for $local_network is missing"
+				exit 1
+			}
+		fi
+	done < <(tr ',' '\n' <<<"$LOCAL_NETWORKS")
+fi
+
+for setting in "ROUTE_INTERNET=$ROUTE_INTERNET" "CLIENT_TO_CLIENT=$CLIENT_TO_CLIENT" "LOCAL_NETWORKS=$LOCAL_NETWORKS"; do
+	grep -Fxq "$setting" /etc/openvpn/server/openvpn-install.conf || {
+		echo "FAIL: Policy manifest is missing $setting"
+		exit 1
+	}
+done
+
+echo "PASS: Access policy configuration is correct"
+
+# =====================================================
 # Verify management interface configuration
 # =====================================================
 echo ""
@@ -264,6 +352,9 @@ echo "Client config copied to /shared/client.ovpn"
 	echo "VPN_GATEWAY=$VPN_GATEWAY"
 	echo "CLIENT_IPV6=$CLIENT_IPV6"
 	echo "AUTH_MODE=$AUTH_MODE"
+	echo "ROUTE_INTERNET=$ROUTE_INTERNET"
+	echo "CLIENT_TO_CLIENT=$CLIENT_TO_CLIENT"
+	echo "LOCAL_NETWORKS=$LOCAL_NETWORKS"
 	if [ "$CLIENT_IPV6" = "y" ]; then
 		echo "VPN_SUBNET_IPV6=$VPN_SUBNET_IPV6"
 		echo "VPN_GATEWAY_IPV6=$VPN_GATEWAY_IPV6"
@@ -599,7 +690,8 @@ echo "Post-renewal client tests passed"
 # =====================================================
 # Verify Unbound DNS resolver (started by systemd via install script)
 # =====================================================
-echo "=== Verifying Unbound DNS Resolver ==="
+if [ "$ROUTE_INTERNET" = "y" ]; then
+	echo "=== Verifying Unbound DNS Resolver ==="
 
 if [ -f /etc/unbound/unbound.conf ]; then
 	# Verify Unbound is running (started by systemctl in install script)
@@ -655,8 +747,15 @@ else
 	exit 1
 fi
 
-echo "=== Unbound Installation Verified ==="
-echo ""
+	echo "=== Unbound Installation Verified ==="
+	echo ""
+else
+	if grep -q '^push "dhcp-option DNS ' /etc/openvpn/server/server.conf; then
+		echo "FAIL: DNS is pushed while internet routing is disabled"
+		exit 1
+	fi
+	echo "PASS: VPN DNS setup is skipped in split-tunnel mode"
+fi
 
 # Verify OpenVPN server (started by systemd via install script)
 echo "Verifying OpenVPN server..."
@@ -664,19 +763,18 @@ echo "Verifying OpenVPN server..."
 # Verify firewall rules exist
 echo "Verifying firewall rules..."
 if systemctl is-active --quiet firewalld; then
-	# firewalld is active - verify masquerade is enabled
-	echo "firewalld detected, checking masquerade..."
-	for _ in $(seq 1 10); do
-		if firewall-cmd --query-masquerade 2>/dev/null; then
-			echo "PASS: firewalld masquerade is enabled"
-			break
+	echo "firewalld detected, checking scoped policy rules..."
+	if [ "$ROUTE_INTERNET" = "y" ]; then
+		if firewall-cmd --list-rich-rules | grep -q "source address=\"$VPN_SUBNET_IPV4/24\" masquerade"; then
+			echo "PASS: firewalld has source-scoped internet NAT"
+		else
+			echo "FAIL: firewalld source-scoped internet NAT is missing"
+			firewall-cmd --list-rich-rules
+			exit 1
 		fi
-		sleep 1
-	done
-	if ! firewall-cmd --query-masquerade 2>/dev/null; then
-		echo "FAIL: firewalld masquerade is not enabled"
-		echo "Current firewalld config:"
-		firewall-cmd --list-all 2>&1 || true
+	fi
+	if firewall-cmd --query-masquerade 2>/dev/null; then
+		echo "FAIL: firewalld zone-wide masquerade should not be enabled"
 		exit 1
 	fi
 	# Verify port is open
@@ -687,13 +785,17 @@ if systemctl is-active --quiet firewalld; then
 		firewall-cmd --list-ports
 		exit 1
 	fi
-	# Verify VPN subnet rich rule exists (source-based rules work reliably across firewalld backends)
-	if firewall-cmd --list-rich-rules | grep -q "source address=\"$VPN_SUBNET_IPV4/24\""; then
-		echo "PASS: VPN subnet rich rule is configured"
-	else
-		echo "FAIL: VPN subnet rich rule not found in firewalld"
-		echo "Current rich rules:"
-		firewall-cmd --list-rich-rules
+	if [ "$ROUTE_INTERNET" = "y" ]; then
+		# Private destinations, including the VPN pool, stay isolated unless explicitly allowed.
+		if firewall-cmd --list-rich-rules | grep -q "destination address=\"10.0.0.0/8\" reject"; then
+			echo "PASS: firewalld private-network isolation is configured"
+		else
+			echo "FAIL: firewalld private-network isolation is missing"
+			firewall-cmd --list-rich-rules
+			exit 1
+		fi
+	elif ! firewall-cmd --list-rich-rules | grep -q "source address=\"$VPN_SUBNET_IPV4/24\" reject"; then
+		echo "FAIL: firewalld split-tunnel default reject is missing"
 		exit 1
 	fi
 elif systemctl is-active --quiet nftables; then
@@ -712,20 +814,25 @@ elif systemctl is-active --quiet nftables; then
 		nft list ruleset 2>&1 || true
 		exit 1
 	fi
-	# Verify NAT table exists
-	if nft list table ip openvpn-nat >/dev/null 2>&1; then
-		echo "PASS: nftables 'ip openvpn-nat' table exists"
-	else
-		echo "FAIL: nftables 'ip openvpn-nat' table not found"
-		nft list ruleset 2>&1 || true
-		exit 1
+	if [ "$ROUTE_INTERNET" = "y" ] || [ -n "$LOCAL_NETWORKS" ]; then
+		if nft list table ip openvpn-nat >/dev/null 2>&1 && nft list table ip openvpn-nat | grep -q "masquerade"; then
+			echo "PASS: nftables scoped NAT is configured"
+		else
+			echo "FAIL: nftables scoped NAT is missing"
+			nft list ruleset 2>&1 || true
+			exit 1
+		fi
 	fi
-	# Verify masquerade rule exists
-	if nft list table ip openvpn-nat | grep -q "masquerade"; then
-		echo "PASS: nftables masquerade rule exists"
-	else
-		echo "FAIL: nftables masquerade rule not found"
-		nft list table ip openvpn-nat 2>&1 || true
+	if [ "$ROUTE_INTERNET" = "y" ]; then
+		if nft list table inet openvpn | grep -q "ip daddr 10.0.0.0/8 drop"; then
+			echo "PASS: nftables private-network isolation is configured"
+		else
+			echo "FAIL: nftables private-network isolation is missing"
+			nft list table inet openvpn
+			exit 1
+		fi
+	elif ! nft list table inet openvpn | grep -q "ip saddr $VPN_SUBNET_IPV4/24 drop"; then
+		echo "FAIL: nftables split-tunnel default drop is missing"
 		exit 1
 	fi
 	# Verify include in nftables.conf
@@ -737,20 +844,32 @@ elif systemctl is-active --quiet nftables; then
 		exit 1
 	fi
 else
-	# iptables mode - verify NAT rules
-	echo "iptables mode, checking NAT rules..."
-	for _ in $(seq 1 10); do
-		if iptables -t nat -L POSTROUTING -n | grep -q "$VPN_SUBNET_IPV4"; then
-			echo "PASS: NAT POSTROUTING rule for $VPN_SUBNET_IPV4/24 exists"
-			break
+	echo "iptables mode, checking policy rules..."
+	if [ "$ROUTE_INTERNET" = "y" ] || [ -n "$LOCAL_NETWORKS" ]; then
+		for _ in $(seq 1 10); do
+			iptables -t nat -L POSTROUTING -n | grep -q "$VPN_SUBNET_IPV4" && break
+			sleep 1
+		done
+		if ! iptables -t nat -L POSTROUTING -n | grep -q "$VPN_SUBNET_IPV4"; then
+			echo "FAIL: Expected scoped NAT rule was not found"
+			iptables -t nat -L POSTROUTING -n -v
+			exit 1
 		fi
-		sleep 1
-	done
-	if ! iptables -t nat -L POSTROUTING -n | grep -q "$VPN_SUBNET_IPV4"; then
-		echo "FAIL: NAT POSTROUTING rule for $VPN_SUBNET_IPV4/24 not found"
-		echo "Current NAT rules:"
-		iptables -t nat -L POSTROUTING -n -v
-		systemctl status iptables-openvpn 2>&1 || true
+	fi
+	if [ "$ROUTE_INTERNET" = "y" ]; then
+		if iptables -S OPENVPN_INSTALL_FORWARD | grep -q -- "-d 10.0.0.0/8 -j REJECT"; then
+			echo "PASS: iptables private-network isolation is configured"
+		else
+			echo "FAIL: iptables private-network isolation is missing"
+			iptables -S OPENVPN_INSTALL_FORWARD
+			exit 1
+		fi
+	elif ! iptables -S OPENVPN_INSTALL_FORWARD | grep -q -- "-A OPENVPN_INSTALL_FORWARD -j REJECT"; then
+		echo "FAIL: iptables split-tunnel default reject is missing"
+		exit 1
+	fi
+	if [ "$CLIENT_TO_CLIENT" = "y" ] && ! iptables -S OPENVPN_INSTALL_FORWARD | grep -q -- "-d $VPN_SUBNET_IPV4/24 -j ACCEPT"; then
+		echo "FAIL: iptables client-to-client allow rule is missing"
 		exit 1
 	fi
 fi

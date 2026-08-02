@@ -12,7 +12,7 @@ This script is meant to be run on your own server, whether it's a VPS or a dedic
 
 Once set up, you will be able to generate client configuration files for every device you want to connect.
 
-Each client will be able to route its internet traffic through the server, fully encrypted.
+By default, each client routes its internet traffic through the server, fully encrypted. You can instead keep internet traffic outside the VPN and allow only selected server-side networks.
 
 ```mermaid
 graph LR
@@ -44,6 +44,7 @@ That said, OpenVPN still makes sense when you need:
 - Immediate client disconnect on certificate revocation (via management interface)
 - Uses [official OpenVPN repositories](https://community.openvpn.net/openvpn/wiki/OpenvpnSoftwareRepos) when possible for the latest stable releases
 - Firewall rules and forwarding managed seamlessly (native firewalld and nftables support, iptables fallback)
+- Independent access policies for internet routing, communication between VPN clients, and selected server-side networks
 - Configurable VPN subnets (IPv4: default `10.8.0.0/24`, IPv6: default `fd42:42:42:42::/112`)
 - Configurable tunnel MTU (default: `1500`)
 - If needed, the script can cleanly remove OpenVPN, including configuration and firewall rules
@@ -263,6 +264,12 @@ The `install` command supports many options for customization:
 # Custom VPN subnet
 ./openvpn-install.sh install --subnet-ipv4 10.9.0.0
 
+# Home VPN: access the home LAN without routing internet through the VPN
+./openvpn-install.sh install --no-route-internet --local-network 192.168.1.0/24
+
+# Allow VPN clients to access each other
+./openvpn-install.sh install --client-to-client
+
 # Enable dual-stack (IPv4 + IPv6) for clients
 ./openvpn-install.sh install --client-ipv4 --client-ipv6
 
@@ -299,12 +306,21 @@ The `install` command supports many options for customization:
 - `--no-client-ipv6` - Disable IPv6 for VPN clients
 - `--subnet-ipv4 <x.x.x.0>` - IPv4 VPN subnet (default: `10.8.0.0`)
 - `--subnet-ipv6 <prefix>` - IPv6 VPN subnet (default: `fd42:42:42:42::`)
+- `--route-internet` / `--no-route-internet` - Enable or disable routing client internet traffic through the VPN (default: enabled)
+- `--client-to-client` / `--no-client-to-client` - Allow or isolate communication between VPN clients (default: isolated)
+- `--local-network <CIDR>` - Allow access to a server-side network and add destination-scoped NAT. Repeat for multiple networks (default: none)
 - `--port <num>` - OpenVPN port (default: `1194`)
 - `--port-random` - Use random port (49152-65535)
 - `--protocol <udp|tcp>` - Protocol (default: `udp`)
 - `--mtu <size>` - Tunnel MTU (default: `1500`)
 
+Server-side network access is mainly intended for VPN servers installed at home. Specify each LAN explicitly. The installer does not automatically expose connected cloud, container, or management networks. LAN devices see connections as coming from the VPN server because destination-scoped NAT is enabled.
+
+Local networks must use network-aligned IPv4 or IPv6 CIDRs and must not overlap the VPN pools. Client-side and server-side LANs that overlap can still cause routing conflicts.
+
 **DNS Options:**
+
+DNS settings are pushed only when internet routing through the VPN is enabled.
 
 - `--dns <provider>` - DNS provider (default: `cloudflare`). Options: `system`, `unbound`, `cloudflare`, `quad9`, `quad9-uncensored`, `fdn`, `dnswatch`, `opendns`, `google`, `yandex`, `adguard`, `nextdns`, `custom`
 - `--dns-primary <ip>` - Custom primary DNS (requires `--dns custom`)

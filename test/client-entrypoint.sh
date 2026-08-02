@@ -220,13 +220,42 @@ if [ "${CLIENT_IPV6:-n}" = "y" ]; then
 	fi
 fi
 
-# Test 2: Ping VPN gateway (IPv4)
-echo "Test 2: Pinging VPN gateway (IPv4) ($VPN_GATEWAY)..."
+# Test 2: Verify pushed routes match the access policy.
+echo "Test 2: Checking access policy routes..."
+if [ "${ROUTE_INTERNET:-y}" = "y" ]; then
+	if ip route show | grep -q '^0.0.0.0/1 .* tun0' && ip route show | grep -q '^128.0.0.0/1 .* tun0'; then
+		echo "PASS: Internet routes use the VPN"
+	else
+		echo "FAIL: VPN internet routes are missing"
+		ip route show
+		exit 1
+	fi
+else
+	if ip route show | grep -qE '^(0\.0\.0\.0/1|128\.0\.0\.0/1) .* tun0'; then
+		echo "FAIL: Internet route uses the VPN in split-tunnel mode"
+		ip route show
+		exit 1
+	fi
+	echo "PASS: Internet routes remain outside the VPN"
+fi
+
+if [ -n "${LOCAL_NETWORKS:-}" ]; then
+	while IFS= read -r local_network; do
+		if [[ $local_network == *.* ]] && ! ip route show "$local_network" | grep -q 'tun0'; then
+			echo "FAIL: Local network route is missing for $local_network"
+			ip route show
+			exit 1
+		fi
+	done < <(tr ',' '\n' <<<"$LOCAL_NETWORKS")
+fi
+
+# Test 3: Ping VPN gateway (IPv4)
+echo "Test 3: Pinging VPN gateway (IPv4) ($VPN_GATEWAY)..."
 wait_for_gateway_ping "VPN gateway (IPv4)"
 
-# Test 2b: Ping VPN gateway (IPv6, if enabled)
+# Test 3b: Ping VPN gateway (IPv6, if enabled)
 if [ "${CLIENT_IPV6:-n}" = "y" ]; then
-	echo "Test 2b: Pinging VPN gateway (IPv6) ($VPN_GATEWAY_IPV6)..."
+	echo "Test 3b: Pinging VPN gateway (IPv6) ($VPN_GATEWAY_IPV6)..."
 	if ping6 -c 5 "$VPN_GATEWAY_IPV6"; then
 		echo "PASS: Can ping VPN gateway (IPv6)"
 	else
@@ -235,8 +264,12 @@ if [ "${CLIENT_IPV6:-n}" = "y" ]; then
 	fi
 fi
 
-# Test 3: DNS resolution through Unbound
-test_dns_resolution "Test 3"
+# Test 4: DNS resolution through Unbound in full-tunnel mode.
+if [ "${ROUTE_INTERNET:-y}" = "y" ]; then
+	test_dns_resolution "Test 4"
+else
+	echo "Test 4: SKIP: VPN DNS is disabled in split-tunnel mode"
+fi
 
 echo ""
 echo "=== Initial connectivity tests PASSED ==="
@@ -269,7 +302,9 @@ sleep 5
 echo "Test: Pinging VPN gateway after renewal ($VPN_GATEWAY)..."
 wait_for_gateway_ping "VPN gateway after renewal"
 
-test_dns_resolution "Test: Post-renewal DNS"
+if [ "${ROUTE_INTERNET:-y}" = "y" ]; then
+	test_dns_resolution "Test: Post-renewal DNS"
+fi
 
 echo ""
 echo "=== Post-renewal connectivity tests PASSED ==="

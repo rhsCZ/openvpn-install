@@ -129,6 +129,17 @@ jobs:
               name: tls-crypt-v2
               sig: crypt-v2
               key_file: tls-crypt-v2.key
+          # Test split tunnel with peer and home-LAN access enabled
+          - os:
+              name: ubuntu-24.04-access-policy
+              image: ubuntu:24.04
+              route_internet: n
+              client_to_client: y
+              local_networks: 10.55.0.0/24
+            tls:
+              name: tls-crypt-v2
+              sig: crypt-v2
+              key_file: tls-crypt-v2.key
 
     name: ${{ matrix.os.name }}
     steps:
@@ -178,6 +189,9 @@ jobs:
             -e TLS_KEY_FILE=${{ matrix.tls.key_file }} \
             -e CLIENT_IPV6=${{ matrix.os.client_ipv6 && 'y' || 'n' }} \
             -e AUTH_MODE=${{ matrix.os.auth_mode || 'pki' }} \
+            -e ROUTE_INTERNET=${{ matrix.os.route_internet || 'y' }} \
+            -e CLIENT_TO_CLIENT=${{ matrix.os.client_to_client || 'n' }} \
+            -e LOCAL_NETWORKS=${{ matrix.os.local_networks || '' }} \
             openvpn-server
 
       - name: Wait for server installation and startup
