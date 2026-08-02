@@ -776,38 +776,48 @@ echo "Verifying OpenVPN server..."
 echo "Verifying firewall rules..."
 if systemctl is-active --quiet firewalld; then
 	echo "firewalld detected, checking scoped policy rules..."
+	if ! firewall-cmd --get-policies | grep -qw openvpn-egress; then
+		echo "FAIL: firewalld OpenVPN policy is missing"
+		exit 1
+	fi
+	if ! firewall-cmd --zone=openvpn-install --query-source="$VPN_SUBNET_IPV4/24"; then
+		echo "FAIL: firewalld OpenVPN source zone is missing"
+		exit 1
+	fi
+	if [ "$(firewall-cmd --permanent --policy=openvpn-egress --get-target)" != "DROP" ]; then
+		echo "FAIL: firewalld OpenVPN policy does not default to DROP"
+		exit 1
+	fi
+	FIREWALLD_POLICY_RULES=$(firewall-cmd --policy=openvpn-egress --list-rich-rules)
 	if [ "$ROUTE_INTERNET" = "y" ]; then
-		if firewall-cmd --list-rich-rules | grep -q "source address=\"$VPN_SUBNET_IPV4/24\" masquerade"; then
-			echo "PASS: firewalld has source-scoped internet NAT"
+		if grep -q 'family="ipv4" masquerade' <<<"$FIREWALLD_POLICY_RULES"; then
+			echo "PASS: firewalld has policy-scoped internet NAT"
 		else
-			echo "FAIL: firewalld source-scoped internet NAT is missing"
-			firewall-cmd --list-rich-rules
+			echo "FAIL: firewalld policy-scoped internet NAT is missing"
+			printf '%s\n' "$FIREWALLD_POLICY_RULES"
 			exit 1
 		fi
+		if grep -q 'destination address="10.0.0.0/8" reject' <<<"$FIREWALLD_POLICY_RULES"; then
+			echo "PASS: firewalld private-network isolation is configured"
+		else
+			echo "FAIL: firewalld private-network isolation is missing"
+			printf '%s\n' "$FIREWALLD_POLICY_RULES"
+			exit 1
+		fi
+	fi
+	if [ "$CLIENT_TO_CLIENT" = "y" ] && ! firewall-cmd --zone=openvpn-install --query-forward; then
+		echo "FAIL: firewalld client-to-client forwarding is missing"
+		exit 1
 	fi
 	if firewall-cmd --query-masquerade 2>/dev/null; then
 		echo "FAIL: firewalld zone-wide masquerade should not be enabled"
 		exit 1
 	fi
-	# Verify port is open
 	if firewall-cmd --list-ports | grep -q "1194/udp"; then
 		echo "PASS: OpenVPN port is open in firewalld"
 	else
 		echo "FAIL: OpenVPN port not found in firewalld"
 		firewall-cmd --list-ports
-		exit 1
-	fi
-	if [ "$ROUTE_INTERNET" = "y" ]; then
-		# Private destinations, including the VPN pool, stay isolated unless explicitly allowed.
-		if firewall-cmd --list-rich-rules | grep -q "destination address=\"10.0.0.0/8\" reject"; then
-			echo "PASS: firewalld private-network isolation is configured"
-		else
-			echo "FAIL: firewalld private-network isolation is missing"
-			firewall-cmd --list-rich-rules
-			exit 1
-		fi
-	elif ! firewall-cmd --list-rich-rules | grep -q "source address=\"$VPN_SUBNET_IPV4/24\" reject"; then
-		echo "FAIL: firewalld split-tunnel default reject is missing"
 		exit 1
 	fi
 elif systemctl is-active --quiet nftables; then

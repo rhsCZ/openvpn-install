@@ -3533,49 +3533,53 @@ verb 3"
 	log_info "Configuring firewall rules..."
 
 	if [[ $FIREWALL_BACKEND == 'firewalld' ]]; then
-		# Rich-rule priorities make explicit local and peer access win before the
-		# private-network deny rules, followed by the selected default policy.
+		# A dedicated source zone identifies VPN traffic. A policy object applies
+		# destination rules to forwarded traffic; zone rich rules alone only
+		# govern traffic addressed to the server.
 		log_info "firewalld detected, using firewall-cmd..."
 		run_cmd_fatal "Adding OpenVPN port to firewalld" firewall-cmd --permanent --add-port="$PORT/$PROTOCOL"
+		run_cmd_fatal "Creating OpenVPN firewalld zone" firewall-cmd --permanent --new-zone=openvpn-install
+		run_cmd_fatal "Creating OpenVPN firewalld policy" firewall-cmd --permanent --new-policy=openvpn-egress
+		run_cmd_fatal "Setting OpenVPN policy ingress" firewall-cmd --permanent --policy=openvpn-egress --add-ingress-zone=openvpn-install
+		run_cmd_fatal "Setting OpenVPN policy egress" firewall-cmd --permanent --policy=openvpn-egress --add-egress-zone=ANY
+		run_cmd_fatal "Setting OpenVPN policy default" firewall-cmd --permanent --policy=openvpn-egress --set-target=DROP
 
 		if [[ -n $VPN_SUBNET_IPV4 ]]; then
-			run_cmd_fatal "Allowing the IPv4 VPN gateway" firewall-cmd --permanent --add-rich-rule="rule priority=\"-400\" family=\"ipv4\" source address=\"$VPN_SUBNET_IPV4/24\" destination address=\"$VPN_GATEWAY_IPV4/32\" accept"
-			while IFS= read -r local_network; do
-				run_cmd_fatal "Allowing local IPv4 network $local_network" firewall-cmd --permanent --add-rich-rule="rule priority=\"-300\" family=\"ipv4\" source address=\"$VPN_SUBNET_IPV4/24\" destination address=\"$local_network\" accept"
-				run_cmd_fatal "Adding NAT for local IPv4 network $local_network" firewall-cmd --permanent --add-rich-rule="rule family=\"ipv4\" source address=\"$VPN_SUBNET_IPV4/24\" destination address=\"$local_network\" masquerade"
-			done < <(local_networks_for_family 4)
-			if [[ $CLIENT_IPV4 == 'y' && $CLIENT_TO_CLIENT == 'y' ]]; then
-				run_cmd_fatal "Allowing IPv4 client-to-client traffic" firewall-cmd --permanent --add-rich-rule="rule priority=\"-300\" family=\"ipv4\" source address=\"$VPN_SUBNET_IPV4/24\" destination address=\"$VPN_SUBNET_IPV4/24\" accept"
-			fi
-			if [[ $CLIENT_IPV4 == 'y' && $ROUTE_INTERNET == 'y' ]]; then
-				for protected_network in "${PROTECTED_IPV4_NETWORKS[@]}"; do
-					run_cmd_fatal "Protecting IPv4 network $protected_network" firewall-cmd --permanent --add-rich-rule="rule priority=\"-200\" family=\"ipv4\" source address=\"$VPN_SUBNET_IPV4/24\" destination address=\"$protected_network\" reject"
-				done
-				run_cmd_fatal "Allowing IPv4 internet access" firewall-cmd --permanent --add-rich-rule="rule priority=\"-100\" family=\"ipv4\" source address=\"$VPN_SUBNET_IPV4/24\" accept"
-				run_cmd_fatal "Adding IPv4 internet NAT" firewall-cmd --permanent --add-rich-rule="rule family=\"ipv4\" source address=\"$VPN_SUBNET_IPV4/24\" masquerade"
-			else
-				run_cmd_fatal "Restricting other IPv4 access" firewall-cmd --permanent --add-rich-rule="rule priority=\"-100\" family=\"ipv4\" source address=\"$VPN_SUBNET_IPV4/24\" reject"
+			run_cmd_fatal "Adding IPv4 VPN source to firewalld" firewall-cmd --permanent --zone=openvpn-install --add-source="$VPN_SUBNET_IPV4/24"
+			run_cmd_fatal "Allowing the IPv4 VPN gateway" firewall-cmd --permanent --zone=openvpn-install --add-rich-rule="rule priority=\"-400\" family=\"ipv4\" destination address=\"$VPN_GATEWAY_IPV4/32\" accept"
+			if [[ $CLIENT_IPV4 == 'y' ]]; then
+				while IFS= read -r local_network; do
+					run_cmd_fatal "Allowing local IPv4 network $local_network" firewall-cmd --permanent --policy=openvpn-egress --add-rich-rule="rule priority=\"-300\" family=\"ipv4\" destination address=\"$local_network\" accept"
+					run_cmd_fatal "Adding NAT for local IPv4 network $local_network" firewall-cmd --permanent --policy=openvpn-egress --add-rich-rule="rule family=\"ipv4\" destination address=\"$local_network\" masquerade"
+				done < <(local_networks_for_family 4)
+				if [[ $ROUTE_INTERNET == 'y' ]]; then
+					for protected_network in "${PROTECTED_IPV4_NETWORKS[@]}"; do
+						run_cmd_fatal "Protecting IPv4 network $protected_network" firewall-cmd --permanent --policy=openvpn-egress --add-rich-rule="rule priority=\"-200\" family=\"ipv4\" destination address=\"$protected_network\" reject"
+					done
+					run_cmd_fatal "Allowing IPv4 internet access" firewall-cmd --permanent --policy=openvpn-egress --add-rich-rule="rule priority=\"-100\" family=\"ipv4\" accept"
+					run_cmd_fatal "Adding IPv4 internet NAT" firewall-cmd --permanent --policy=openvpn-egress --add-rich-rule="rule family=\"ipv4\" masquerade"
+				fi
 			fi
 		fi
 
 		if [[ $CLIENT_IPV6 == 'y' ]]; then
-			run_cmd_fatal "Allowing the IPv6 VPN gateway" firewall-cmd --permanent --add-rich-rule="rule priority=\"-400\" family=\"ipv6\" source address=\"${VPN_SUBNET_IPV6}/112\" destination address=\"$VPN_GATEWAY_IPV6/128\" accept"
+			run_cmd_fatal "Adding IPv6 VPN source to firewalld" firewall-cmd --permanent --zone=openvpn-install --add-source="${VPN_SUBNET_IPV6}/112"
+			run_cmd_fatal "Allowing the IPv6 VPN gateway" firewall-cmd --permanent --zone=openvpn-install --add-rich-rule="rule priority=\"-400\" family=\"ipv6\" destination address=\"$VPN_GATEWAY_IPV6/128\" accept"
 			while IFS= read -r local_network; do
-				run_cmd_fatal "Allowing local IPv6 network $local_network" firewall-cmd --permanent --add-rich-rule="rule priority=\"-300\" family=\"ipv6\" source address=\"${VPN_SUBNET_IPV6}/112\" destination address=\"$local_network\" accept"
-				run_cmd_fatal "Adding NAT for local IPv6 network $local_network" firewall-cmd --permanent --add-rich-rule="rule family=\"ipv6\" source address=\"${VPN_SUBNET_IPV6}/112\" destination address=\"$local_network\" masquerade"
+				run_cmd_fatal "Allowing local IPv6 network $local_network" firewall-cmd --permanent --policy=openvpn-egress --add-rich-rule="rule priority=\"-300\" family=\"ipv6\" destination address=\"$local_network\" accept"
+				run_cmd_fatal "Adding NAT for local IPv6 network $local_network" firewall-cmd --permanent --policy=openvpn-egress --add-rich-rule="rule family=\"ipv6\" destination address=\"$local_network\" masquerade"
 			done < <(local_networks_for_family 6)
-			if [[ $CLIENT_TO_CLIENT == 'y' ]]; then
-				run_cmd_fatal "Allowing IPv6 client-to-client traffic" firewall-cmd --permanent --add-rich-rule="rule priority=\"-300\" family=\"ipv6\" source address=\"${VPN_SUBNET_IPV6}/112\" destination address=\"${VPN_SUBNET_IPV6}/112\" accept"
-			fi
 			if [[ $ROUTE_INTERNET == 'y' ]]; then
 				for protected_network in "${PROTECTED_IPV6_NETWORKS[@]}"; do
-					run_cmd_fatal "Protecting IPv6 network $protected_network" firewall-cmd --permanent --add-rich-rule="rule priority=\"-200\" family=\"ipv6\" source address=\"${VPN_SUBNET_IPV6}/112\" destination address=\"$protected_network\" reject"
+					run_cmd_fatal "Protecting IPv6 network $protected_network" firewall-cmd --permanent --policy=openvpn-egress --add-rich-rule="rule priority=\"-200\" family=\"ipv6\" destination address=\"$protected_network\" reject"
 				done
-				run_cmd_fatal "Allowing IPv6 internet access" firewall-cmd --permanent --add-rich-rule="rule priority=\"-100\" family=\"ipv6\" source address=\"${VPN_SUBNET_IPV6}/112\" accept"
-				run_cmd_fatal "Adding IPv6 internet NAT" firewall-cmd --permanent --add-rich-rule="rule family=\"ipv6\" source address=\"${VPN_SUBNET_IPV6}/112\" masquerade"
-			else
-				run_cmd_fatal "Restricting other IPv6 access" firewall-cmd --permanent --add-rich-rule="rule priority=\"-100\" family=\"ipv6\" source address=\"${VPN_SUBNET_IPV6}/112\" reject"
+				run_cmd_fatal "Allowing IPv6 internet access" firewall-cmd --permanent --policy=openvpn-egress --add-rich-rule="rule priority=\"-100\" family=\"ipv6\" accept"
+				run_cmd_fatal "Adding IPv6 internet NAT" firewall-cmd --permanent --policy=openvpn-egress --add-rich-rule="rule family=\"ipv6\" masquerade"
 			fi
+		fi
+
+		if [[ $CLIENT_TO_CLIENT == 'y' ]]; then
+			run_cmd_fatal "Allowing firewalld intra-zone forwarding" firewall-cmd --permanent --zone=openvpn-install --add-forward
 		fi
 
 		run_cmd_fatal "Reloading firewalld" firewall-cmd --reload
@@ -3600,9 +3604,11 @@ verb 3"
 			echo "		type filter hook forward priority -10; policy accept;"
 			if [[ -n $VPN_SUBNET_IPV4 ]]; then
 				echo "		oifname \"tun*\" ip daddr $VPN_SUBNET_IPV4/24 ct state established,related accept"
-				while IFS= read -r local_network; do
-					echo "		iifname \"tun*\" ip saddr $VPN_SUBNET_IPV4/24 ip daddr $local_network accept"
-				done < <(local_networks_for_family 4)
+				if [[ $CLIENT_IPV4 == 'y' ]]; then
+					while IFS= read -r local_network; do
+						echo "		iifname \"tun*\" ip saddr $VPN_SUBNET_IPV4/24 ip daddr $local_network accept"
+					done < <(local_networks_for_family 4)
+				fi
 				if [[ $CLIENT_IPV4 == 'y' && $CLIENT_TO_CLIENT == 'y' ]]; then
 					echo "		iifname \"tun*\" ip saddr $VPN_SUBNET_IPV4/24 ip daddr $VPN_SUBNET_IPV4/24 accept"
 				fi
@@ -3715,10 +3721,12 @@ verb 3"
 				echo "iptables -I INPUT 1 -i tun+ -s $VPN_SUBNET_IPV4/24 -j ACCEPT"
 				echo "iptables -I FORWARD 1 -o tun+ -d $VPN_SUBNET_IPV4/24 -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT"
 				echo "iptables -I FORWARD 1 -i tun+ -s $VPN_SUBNET_IPV4/24 -j OPENVPN_INSTALL_FORWARD"
-				while IFS= read -r local_network; do
-					echo "iptables -A OPENVPN_INSTALL_FORWARD -d $local_network -j ACCEPT"
-					echo "iptables -t nat -I POSTROUTING 1 -s $VPN_SUBNET_IPV4/24 -d $local_network -j MASQUERADE"
-				done < <(local_networks_for_family 4)
+				if [[ $CLIENT_IPV4 == 'y' ]]; then
+					while IFS= read -r local_network; do
+						echo "iptables -A OPENVPN_INSTALL_FORWARD -d $local_network -j ACCEPT"
+						echo "iptables -t nat -I POSTROUTING 1 -s $VPN_SUBNET_IPV4/24 -d $local_network -j MASQUERADE"
+					done < <(local_networks_for_family 4)
+				fi
 				if [[ $CLIENT_IPV4 == 'y' && $CLIENT_TO_CLIENT == 'y' ]]; then
 					echo "iptables -A OPENVPN_INSTALL_FORWARD -d $VPN_SUBNET_IPV4/24 -j ACCEPT"
 				fi
@@ -3740,9 +3748,11 @@ verb 3"
 				if [[ $CLIENT_IPV4 == 'y' && $ROUTE_INTERNET == 'y' ]]; then
 					echo "remove_rule iptables -t nat -D POSTROUTING -s $VPN_SUBNET_IPV4/24 -o $NIC -j MASQUERADE"
 				fi
-				while IFS= read -r local_network; do
-					echo "remove_rule iptables -t nat -D POSTROUTING -s $VPN_SUBNET_IPV4/24 -d $local_network -j MASQUERADE"
-				done < <(local_networks_for_family 4)
+				if [[ $CLIENT_IPV4 == 'y' ]]; then
+					while IFS= read -r local_network; do
+						echo "remove_rule iptables -t nat -D POSTROUTING -s $VPN_SUBNET_IPV4/24 -d $local_network -j MASQUERADE"
+					done < <(local_networks_for_family 4)
+				fi
 				echo "remove_rule iptables -F OPENVPN_INSTALL_FORWARD"
 				echo "remove_rule iptables -X OPENVPN_INSTALL_FORWARD"
 			} >>/etc/iptables/rm-openvpn-rules.sh
@@ -4942,44 +4952,8 @@ function removeOpenVPN() {
 		if systemctl is-active --quiet firewalld && { [[ $has_policy_manifest == 'y' && $FIREWALL_BACKEND == 'firewalld' ]] || { [[ $has_policy_manifest == 'n' ]] && firewall-cmd --list-ports | grep -q "$PORT/$PROTOCOL_BASE"; }; }; then
 			run_cmd "Removing OpenVPN port from firewalld" firewall-cmd --permanent --remove-port="$PORT/$PROTOCOL_BASE"
 			if [[ $has_policy_manifest == 'y' ]]; then
-				if [[ -n $VPN_SUBNET_IPV4 ]]; then
-					firewall-cmd --permanent --remove-rich-rule="rule priority=\"-400\" family=\"ipv4\" source address=\"$VPN_SUBNET_IPV4/24\" destination address=\"$VPN_GATEWAY_IPV4/32\" accept" 2>/dev/null || true
-					while IFS= read -r local_network; do
-						firewall-cmd --permanent --remove-rich-rule="rule priority=\"-300\" family=\"ipv4\" source address=\"$VPN_SUBNET_IPV4/24\" destination address=\"$local_network\" accept" 2>/dev/null || true
-						firewall-cmd --permanent --remove-rich-rule="rule family=\"ipv4\" source address=\"$VPN_SUBNET_IPV4/24\" destination address=\"$local_network\" masquerade" 2>/dev/null || true
-					done < <(local_networks_for_family 4)
-					if [[ $CLIENT_IPV4 == 'y' && $CLIENT_TO_CLIENT == 'y' ]]; then
-						firewall-cmd --permanent --remove-rich-rule="rule priority=\"-300\" family=\"ipv4\" source address=\"$VPN_SUBNET_IPV4/24\" destination address=\"$VPN_SUBNET_IPV4/24\" accept" 2>/dev/null || true
-					fi
-					if [[ $CLIENT_IPV4 == 'y' && $ROUTE_INTERNET == 'y' ]]; then
-						for protected_network in "${PROTECTED_IPV4_NETWORKS[@]}"; do
-							firewall-cmd --permanent --remove-rich-rule="rule priority=\"-200\" family=\"ipv4\" source address=\"$VPN_SUBNET_IPV4/24\" destination address=\"$protected_network\" reject" 2>/dev/null || true
-						done
-						firewall-cmd --permanent --remove-rich-rule="rule priority=\"-100\" family=\"ipv4\" source address=\"$VPN_SUBNET_IPV4/24\" accept" 2>/dev/null || true
-						firewall-cmd --permanent --remove-rich-rule="rule family=\"ipv4\" source address=\"$VPN_SUBNET_IPV4/24\" masquerade" 2>/dev/null || true
-					else
-						firewall-cmd --permanent --remove-rich-rule="rule priority=\"-100\" family=\"ipv4\" source address=\"$VPN_SUBNET_IPV4/24\" reject" 2>/dev/null || true
-					fi
-				fi
-				if [[ $CLIENT_IPV6 == 'y' ]]; then
-					firewall-cmd --permanent --remove-rich-rule="rule priority=\"-400\" family=\"ipv6\" source address=\"${VPN_SUBNET_IPV6}/112\" destination address=\"$VPN_GATEWAY_IPV6/128\" accept" 2>/dev/null || true
-					while IFS= read -r local_network; do
-						firewall-cmd --permanent --remove-rich-rule="rule priority=\"-300\" family=\"ipv6\" source address=\"${VPN_SUBNET_IPV6}/112\" destination address=\"$local_network\" accept" 2>/dev/null || true
-						firewall-cmd --permanent --remove-rich-rule="rule family=\"ipv6\" source address=\"${VPN_SUBNET_IPV6}/112\" destination address=\"$local_network\" masquerade" 2>/dev/null || true
-					done < <(local_networks_for_family 6)
-					if [[ $CLIENT_TO_CLIENT == 'y' ]]; then
-						firewall-cmd --permanent --remove-rich-rule="rule priority=\"-300\" family=\"ipv6\" source address=\"${VPN_SUBNET_IPV6}/112\" destination address=\"${VPN_SUBNET_IPV6}/112\" accept" 2>/dev/null || true
-					fi
-					if [[ $ROUTE_INTERNET == 'y' ]]; then
-						for protected_network in "${PROTECTED_IPV6_NETWORKS[@]}"; do
-							firewall-cmd --permanent --remove-rich-rule="rule priority=\"-200\" family=\"ipv6\" source address=\"${VPN_SUBNET_IPV6}/112\" destination address=\"$protected_network\" reject" 2>/dev/null || true
-						done
-						firewall-cmd --permanent --remove-rich-rule="rule priority=\"-100\" family=\"ipv6\" source address=\"${VPN_SUBNET_IPV6}/112\" accept" 2>/dev/null || true
-						firewall-cmd --permanent --remove-rich-rule="rule family=\"ipv6\" source address=\"${VPN_SUBNET_IPV6}/112\" masquerade" 2>/dev/null || true
-					else
-						firewall-cmd --permanent --remove-rich-rule="rule priority=\"-100\" family=\"ipv6\" source address=\"${VPN_SUBNET_IPV6}/112\" reject" 2>/dev/null || true
-					fi
-				fi
+				firewall-cmd --permanent --delete-policy=openvpn-egress 2>/dev/null || true
+				firewall-cmd --permanent --delete-zone=openvpn-install 2>/dev/null || true
 			else
 				# Compatibility with installations created before policy manifests.
 				run_cmd "Removing masquerade from firewalld" firewall-cmd --permanent --remove-masquerade
